@@ -9,6 +9,11 @@ import streamlit as st
 import anthropic
 import json
 import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime
 
 # ─── Audit Structure ────────────────────────────────────────────────────────
@@ -195,6 +200,56 @@ def save_audit_data(audit_data, project_info):
     return filename
 
 
+def send_audit_email(audit_data, filename, project_info):
+    """Email the completed audit JSON to chris.slater@gmail.com."""
+    gmail_user = st.secrets.get("GMAIL_USER", None)
+    gmail_password = st.secrets.get("GMAIL_APP_PASSWORD", None)
+    if not gmail_user or not gmail_password:
+        return False, "Email credentials not configured in Streamlit secrets."
+
+    recipient = "chris.slater@gmail.com"
+    building_name = project_info.get("building_name", "Unknown Building")
+    audit_date = datetime.now().strftime("%B %d, %Y")
+
+    # Build a readable plain-text summary for the email body
+    summary_lines = [
+        f"Energy Audit Completed: {building_name}",
+        f"Date: {audit_date}",
+        f"Sections completed: {len(audit_data)}",
+        "",
+        "--- Section Summary ---",
+    ]
+    for section_id, data in audit_data.items():
+        section_name = next((s["name"] for s in AUDIT_SECTIONS if s["id"] == section_id), section_id)
+        field_count = sum(1 for v in data.values() if v is not None)
+        summary_lines.append(f"  {section_name}: {field_count} fields captured")
+
+    summary_lines += ["", "Full data attached as JSON.", ""]
+
+    msg = MIMEMultipart()
+    msg["From"] = gmail_user
+    msg["To"] = recipient
+    msg["Subject"] = f"Energy Audit — {building_name} — {audit_date}"
+    msg.attach(MIMEText("\n".join(summary_lines), "plain"))
+
+    # Attach the JSON file
+    json_bytes = json.dumps({"audit_metadata": {"created": datetime.now().isoformat()},
+                              "audit_data": audit_data}, indent=2).encode("utf-8")
+    attachment = MIMEBase("application", "octet-stream")
+    attachment.set_payload(json_bytes)
+    encoders.encode_base64(attachment)
+    attachment.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+    msg.attach(attachment)
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_password)
+            server.sendmail(gmail_user, recipient, msg.as_string())
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 # ─── Streamlit UI ────────────────────────────────────────────────────────────
 
 def main():
@@ -287,10 +342,22 @@ def main():
     # ── Audit Complete Screen ────────────────────────────────────────────────
     if st.session_state.audit_complete:
         st.success("## ✅ Audit Complete!")
-        st.write("All sections have been completed. Your audit data has been saved.")
+        st.write("All sections have been completed.")
 
-        if st.session_state.saved_file:
-            st.info(f"📁 Data saved to: **{st.session_state.saved_file}**")
+        # Send email automatically on first load of this screen
+        if "email_sent" not in st.session_state:
+            project_info = st.session_state.audit_data.get("project_info", {})
+            filename = st.session_state.saved_file or "audit_data.json"
+            with st.spinner("Emailing results to chris.slater@gmail.com..."):
+                ok, err = send_audit_email(st.session_state.audit_data, filename, project_info)
+            if ok:
+                st.session_state.email_sent = True
+                st.info("📧 Results emailed to chris.slater@gmail.com")
+            else:
+                st.session_state.email_sent = False
+                st.warning(f"Email could not be sent: {err}. Use the download button below.")
+        elif st.session_state.email_sent:
+            st.info("📧 Results emailed to chris.slater@gmail.com")
 
         st.subheader("Audit Summary")
         for section_id, data in st.session_state.audit_data.items():
@@ -300,14 +367,14 @@ def main():
 
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Download JSON", type="primary"):
-                output = json.dumps(st.session_state.audit_data, indent=2)
-                st.download_button(
-                    label="Click to Download",
-                    data=output,
-                    file_name=st.session_state.saved_file or "audit_data.json",
-                    mime="application/json"
-                )
+            output = json.dumps(st.session_state.audit_data, indent=2)
+            st.download_button(
+                label="Download JSON",
+                data=output,
+                file_name=st.session_state.saved_file or "audit_data.json",
+                mime="application/json",
+                type="primary"
+            )
         with col2:
             if st.button("Start New Audit"):
                 for key in list(st.session_state.keys()):
