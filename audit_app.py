@@ -207,21 +207,44 @@ def main():
     st.title("⚡ Energy Audit Agent")
     st.caption("A structured energy audit assistant powered by Claude AI")
 
-    # ── API Key Setup ────────────────────────────────────────────────────────
+    # ── API Key Setup (checks Streamlit secret first, falls back to manual entry) ──
     if "api_key_set" not in st.session_state:
         st.session_state.api_key_set = False
 
     if not st.session_state.api_key_set:
-        st.info("To get started, enter your Claude API key below. You can get one free at console.anthropic.com")
-        api_key = st.text_input("Claude API Key", type="password", placeholder="sk-ant-...")
-        if st.button("Start Audit", type="primary"):
-            if api_key.startswith("sk-ant-"):
-                st.session_state.api_key = api_key
-                st.session_state.api_key_set = True
-                st.rerun()
-            else:
-                st.error("That doesn't look like a valid Claude API key. It should start with 'sk-ant-'")
-        return
+        # Try to load key from Streamlit secrets (set via Streamlit Cloud dashboard)
+        secret_key = st.secrets.get("ANTHROPIC_API_KEY", None)
+        if secret_key and secret_key.startswith("sk-ant-"):
+            st.session_state.api_key = secret_key
+            st.session_state.api_key_set = True
+        else:
+            st.info("To get started, enter your Claude API key below. You can get one free at console.anthropic.com")
+            api_key = st.text_input("Claude API Key", type="password", placeholder="sk-ant-...")
+            if st.button("Start Audit", type="primary"):
+                if api_key.startswith("sk-ant-"):
+                    st.session_state.api_key = api_key
+                    st.session_state.api_key_set = True
+                    st.rerun()
+                else:
+                    st.error("That doesn't look like a valid Claude API key. It should start with 'sk-ant-'")
+            return
+
+    # ── Optional Password Gate ───────────────────────────────────────────────
+    # If ACCESS_PASSWORD is set in Streamlit secrets, require it before proceeding
+    access_password = st.secrets.get("ACCESS_PASSWORD", None)
+    if access_password:
+        if "access_granted" not in st.session_state:
+            st.session_state.access_granted = False
+        if not st.session_state.access_granted:
+            st.subheader("Access Required")
+            entered = st.text_input("Enter access password", type="password")
+            if st.button("Continue", type="primary"):
+                if entered == access_password:
+                    st.session_state.access_granted = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+            return
 
     # ── Session State Init ───────────────────────────────────────────────────
     if "current_section_idx" not in st.session_state:
